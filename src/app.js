@@ -4,57 +4,39 @@ import Web3 from 'web3';
 
 
 
-class Brick extends Phaser.Physics.Arcade.Sprite {
-    constructor(scene, x, y, texture, hits) {
-      super(scene, x, y, texture);
-      scene.add.existing(this);
-      scene.physics.add.existing(this);
-      this.hits = hits; // Number of hits required to break
-    }
-  
-    hit() {
-      this.hits--;
-      if (this.hits <= 0) {
-        this.destroy();
-        return true; // Brick destroyed
-      }
-      return false; // Brick not yet destroyed
-    }
-  }
-
 class GameScene extends Phaser.Scene {
   constructor() {
     super({ key: 'GameScene' });
-  
+
     this.bricks = null;
     this.web3 = null;
     this.provider = null;
     this.paddle = null;
     this.ball = null;
-    this.bricks = null;
     this.score = 0;
-    this.timeLeft = 100;
+    this.startTime = 60;
+    this.timeLeft = this.startTime;
+    this.timeEvent = null;
+    this.isGameOver = false;
+    this.endMenuContainer = null;
+    this.progressBar = null;
+    this.scoreText = null;
+    this.timerText = null;
+    this.cursors = null;
   }
 
   async init() {
-    // Initialize Web3
     await this.setupWeb3();
   }
 
   async setupWeb3() {
     if (window.ethereum) {
       try {
-        // Request account access if needed
         await window.ethereum.request({ method: 'eth_requestAccounts' });
-        
-        // Create a new Web3 instance
         this.web3 = new Web3(window.ethereum);
-
-        // Log account details for demonstration
         const accounts = await this.web3.eth.getAccounts();
         console.log('Connected account:', accounts[0]);
 
-        // Optionally set up event listeners for MetaMask account changes
         window.ethereum.on('accountsChanged', (accounts) => {
           console.log('Accounts changed:', accounts);
         });
@@ -62,7 +44,6 @@ class GameScene extends Phaser.Scene {
         window.ethereum.on('chainChanged', (chainId) => {
           console.log('Network changed:', chainId);
         });
-
       } catch (error) {
         console.error('User denied account access or other error:', error);
       }
@@ -72,165 +53,243 @@ class GameScene extends Phaser.Scene {
   }
 
   preload() {
-    this.load.image('brick', 'path/to/brick.png');
-    this.load.image('ball', 'path/to/ball.png');
-    this.load.image('paddle', 'path/to/paddle.png');
+    this.generateTexture('brick', 100, 32, 0xff5555);
+    this.generateTexture('paddle', 120, 24, 0x00b5ff);
+    this.generateCircleTexture('ball', 12, 0xffffff);
   }
 
   create() {
-    // Create game objects
+    this.isGameOver = false;
+    this.score = 0;
+    this.timeLeft = this.startTime;
+
+    this.physics.world.setBoundsCollision(true, true, true, false);
     this.bricks = this.physics.add.staticGroup();
+    this.createBricks();
+
     this.ball = this.physics.add.sprite(400, 500, 'ball');
-    this.paddle = this.physics.add.sprite(400, 550, 'paddle');
-
-    // Create bricks
-    for (let i = 0; i < 5; i++) {
-      for (let j = 0; j < 3; j++) {
-        this.bricks.create(100 + i * 150, 100 + j * 50, 'brick');
-      }
-    }
-
-    // Set up physics
-    this.ball.setBounce(1);
     this.ball.setCollideWorldBounds(true);
-    this.ball.setVelocity(200, -200);
+    this.ball.setBounce(1, 1);
+    this.ball.setVelocity(220, -220);
 
+    this.paddle = this.physics.add.sprite(400, 550, 'paddle');
     this.paddle.setImmovable(true);
+    this.paddle.setCollideWorldBounds(true);
+    this.paddle.body.setAllowGravity(false);
+
     this.physics.add.collider(this.ball, this.paddle);
     this.physics.add.collider(this.ball, this.bricks, this.hitBrick, null, this);
 
-    // Control paddle
-    this.input.on('pointermove', pointer => {
-      this.paddle.x = Phaser.Math.Clamp(pointer.x, 50, 750);
+    this.cursors = this.input.keyboard.createCursorKeys();
+
+    this.input.on('pointermove', (pointer) => {
+      this.paddle.x = Phaser.Math.Clamp(pointer.x, 80, 720);
     });
 
-    // Initialize score display
-    this.scoreText = this.add.text(16, 16, `Score: ${this.score}`, {
-      fontSize: '32px',
-      fill: '#fff'
-    });
-
-    this.timeLeft = 100; // Starting time
+    const textStyle = { fontSize: '28px', fill: '#ffffff' };
+    this.scoreText = this.add.text(16, 16, 'Score: 0', textStyle);
+    this.timerText = this.add.text(16, 52, '', { fontSize: '22px', fill: '#f5f5f5' });
     this.progressBar = this.add.graphics();
-    this.timeEvent = this.time.addEvent({
-        delay: 100, // 100ms updates
-        callback: this.updateTimer,
-        callbackScope: this,
-        loop: true
-    });
+
+    this.resetTimer();
+    this.updateTimerDisplay();
   }
 
   update() {
-    // Example: Handle ball and paddle interactions
-    if (this.ball.y > this.sys.canvas.height) {
-      // Game Over: Ball has fallen below the screen
-      this.gameOver();
+    if (this.isGameOver) {
+      return;
     }
 
-    // Example: Update paddle position based on user input
-    const cursors = this.input.keyboard.createCursorKeys();
+    if (this.ball.y > this.scale.height) {
+      this.gameOver();
+      return;
+    }
 
-    if (cursors.left.isDown) {
-      this.paddle.setVelocityX(-300);
-    } else if (cursors.right.isDown) {
-      this.paddle.setVelocityX(300);
+    this.handlePaddleMovement();
+  }
+
+  handlePaddleMovement() {
+    const speed = 500;
+    if (this.cursors.left.isDown) {
+      this.paddle.setVelocityX(-speed);
+    } else if (this.cursors.right.isDown) {
+      this.paddle.setVelocityX(speed);
     } else {
       this.paddle.setVelocityX(0);
     }
-    
-    // Example: Check if the ball hits the top of the screen and reverse direction
-    if (this.ball.y < 0) {
-      this.ball.setVelocityY(Math.abs(this.ball.body.velocity.y));
-    }
-    
-    // Optional: Update score or any other game-related logic
+  }
 
-    this.timeLeft--;
+  generateTexture(key, width, height, color) {
+    const gfx = this.add.graphics();
+    gfx.fillStyle(color, 1);
+    gfx.fillRect(0, 0, width, height);
+    gfx.generateTexture(key, width, height);
+    gfx.destroy();
+  }
 
-    // Update progress bar
-    this.progressBar.clear();
-    this.progressBar.fillStyle(0xff0000, 1);
-    this.progressBar.fillRect(20, 20, (this.timeLeft / 100) * 300, 20);
-  
-    if (this.timeLeft <= 0) {
-      this.failLevel();
-    }
-
+  generateCircleTexture(key, radius, color) {
+    const diameter = radius * 2;
+    const gfx = this.add.graphics();
+    gfx.fillStyle(color, 1);
+    gfx.fillCircle(radius, radius, radius);
+    gfx.generateTexture(key, diameter, diameter);
+    gfx.destroy();
   }
 
   createBricks() {
-    this.bricks.clear(true, true); // Remove old bricks
-  
-    for (let i = 0; i < 5; i++) {
-      for (let j = 0; j < 3; j++) {
-        let hits = Phaser.Math.Between(1, 3); // Random hit points for each brick
-        let brick = new Brick(this, 100 + i * 150, 100 + j * 50, 'brick', hits);
-        this.bricks.add(brick);
+    this.bricks.clear(true, true);
+    const rows = 4;
+    const cols = 8;
+    const startX = 80;
+    const startY = 120;
+    const offsetX = 90;
+    const offsetY = 50;
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const brick = this.bricks.create(
+          startX + col * offsetX,
+          startY + row * offsetY,
+          'brick'
+        );
+        brick.setOrigin(0.5);
+        brick.refreshBody();
       }
     }
   }
 
-  failLevel() {
-    // Pause the game and show the fail menu
-    this.scene.pause();
-    this.showFailMenu();
+  hitBrick(ball, brick) {
+    brick.disableBody(true, true);
+    this.updateScore(10);
+    if (this.bricks.countActive(true) === 0) {
+      this.time.delayedCall(250, this.completeLevel, [], this);
+    }
   }
-  
-  showFailMenu() {
-    const failText = this.add.text(400, 300, 'You Failed!', {
-      fontSize: '32px',
-      fill: '#fff'
-    }).setOrigin(0.5);
-  
-    const restartButton = this.add.text(400, 350, 'Restart', {
-      fontSize: '24px',
-      fill: '#fff',
-      backgroundColor: '#000'
-    }).setOrigin(0.5).setInteractive();
-  
-    restartButton.on('pointerdown', () => {
-      this.scene.restart(); // Restart the level
+
+  updateScore(points = 10) {
+    this.score += points;
+    this.scoreText.setText(`Score: ${this.score}`);
+  }
+
+  resetBall() {
+    this.ball.setPosition(this.scale.width / 2, 500);
+    this.ball.setVelocity(220, -220);
+    this.physics.world.resume();
+  }
+
+  resetTimer() {
+    this.timeEvent?.remove(false);
+    this.timeLeft = this.startTime;
+    this.timeEvent = this.time.addEvent({
+      delay: 1000,
+      callback: this.updateTimer,
+      callbackScope: this,
+      loop: true,
     });
-  
-    const titleButton = this.add.text(400, 400, 'Go to Title', {
-      fontSize: '24px',
-      fill: '#fff',
-      backgroundColor: '#000'
-    }).setOrigin(0.5).setInteractive();
-  
-    titleButton.on('pointerdown', () => {
-      this.scene.start('TitleScene'); // Go to the title scene
-    });
+    this.updateTimerDisplay();
+  }
+
+  updateTimer() {
+    if (this.isGameOver) {
+      return;
+    }
+
+    this.timeLeft = Math.max(this.timeLeft - 1, 0);
+    this.updateTimerDisplay();
+
+    if (this.timeLeft <= 0) {
+      this.failLevel();
+    }
+  }
+
+  updateTimerDisplay() {
+    const percent = Phaser.Math.Clamp(this.timeLeft / this.startTime, 0, 1);
+    const maxWidth = 300;
+    const barWidth = maxWidth * percent;
+    this.progressBar.clear();
+    this.progressBar.fillStyle(0x28c76f, 0.9);
+    this.progressBar.fillRect(20, 20, barWidth, 18);
+    this.progressBar.lineStyle(2, 0xffffff);
+    this.progressBar.strokeRect(20, 20, maxWidth, 18);
+    this.timerText.setText(`Time: ${this.timeLeft}s`);
+  }
+
+  failLevel() {
+    this.endGame('Time ran out!');
+  }
+
+  gameOver() {
+    this.endGame('Game Over');
+  }
+
+  endGame(message) {
+    if (this.isGameOver) {
+      return;
+    }
+
+    this.isGameOver = true;
+    this.timeEvent?.remove(false);
+    this.timeEvent = null;
+    this.physics.world.pause();
+    if (this.ball) {
+      this.ball.setVelocity(0);
+    }
+    if (this.paddle) {
+      this.paddle.setVelocity(0);
+    }
+    this.showEndMenu(message);
+  }
+
+  showEndMenu(message) {
+    if (this.endMenuContainer) {
+      this.endMenuContainer.destroy();
+    }
+
+    const overlay = this.add.rectangle(400, 300, this.scale.width, this.scale.height, 0x000000, 0.6);
+    const title = this.add
+      .text(400, 240, message, {
+        fontSize: '36px',
+        fill: '#ffffff',
+      })
+      .setOrigin(0.5);
+
+    const scoreText = this.add
+      .text(400, 290, `Final Score: ${this.score}`, {
+        fontSize: '28px',
+        fill: '#ffe066',
+      })
+      .setOrigin(0.5);
+
+    const restartButton = this.add
+      .text(400, 360, 'Restart', {
+        fontSize: '24px',
+        fill: '#000000',
+        backgroundColor: '#ffffff',
+        padding: { x: 12, y: 6 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+
+    restartButton.on('pointerdown', () => this.restartGame());
+
+    this.endMenuContainer = this.add.container(0, 0, [overlay, title, scoreText, restartButton]);
+  }
+
+  restartGame() {
+    this.physics.world.resume();
+    this.endMenuContainer?.destroy();
+    this.endMenuContainer = null;
+    this.scene.restart();
   }
 
   completeLevel() {
-    // Create a new layout for the next level
+    if (this.isGameOver) {
+      return;
+    }
+
     this.createBricks();
-  
-    // Reset the timer
-    this.timeLeft = 100;
-  }
-  
-  gameOver() {
-    // Handle game over logic
-    this.add.text(400, 300, 'Game Over', {
-      fontSize: '32px',
-      fill: '#fff'
-    }).setOrigin(0.5);
-    
-    // Stop the game or restart
-    this.scene.pause();
-  }
-
-  hitBrick(ball, brick) {
-    brick.destroy();
-    ball.setVelocityY(-ball.body.velocity.y);
-    this.updateScore(); // Update score when hitting a brick
-  }
-
-  updateScore() {
-    this.score += 10; // Example score increment
-    this.scoreText.setText(`Score: ${this.score}`);
+    this.resetBall();
+    this.resetTimer();
   }
 }
 
