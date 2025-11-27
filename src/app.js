@@ -4,7 +4,7 @@ import { connectWallet } from './solana/wallet';
 import { loadCollectibles, registerCollectible } from './solana/nftCollector';
 
 const LEVEL_CONFIGS = [
-  { level: 1, rows: 4, cols: 7, brickColor: 0xff5555, baseBallSpeed: 220, timeLimit: 60, powerUpChance: 16, reward: 'Novice Breaker' },
+  { level: 1, rows: 4, cols: 7, brickColor: 0xff5555, baseBallSpeed: 220, timeLimit: 60, powerUpChance: 16, reward: 'Novice Breaker', boss: true, bossHP: 100  },
   { level: 2, rows: 4, cols: 8, brickColor: 0xffa500, baseBallSpeed: 230, timeLimit: 58, powerUpChance: 17, reward: 'Heatseeker' },
   { level: 3, rows: 5, cols: 8, brickColor: 0xaa00ff, baseBallSpeed: 240, timeLimit: 56, powerUpChance: 18, reward: 'Combo Chaser' },
   { level: 4, rows: 5, cols: 9, brickColor: 0x3ee85b, baseBallSpeed: 250, timeLimit: 54, powerUpChance: 19, reward: 'Time Cadet' },
@@ -109,6 +109,7 @@ class GameScene extends Phaser.Scene {
 
     this.physics.world.setBoundsCollision(true, true, true, false);
     this.bricks = this.physics.add.staticGroup();
+    this.protectionBricks = this.physics.add.staticGroup();
 
     const textStyle = { fontSize: '28px', fill: '#ffffff' };
     this.scoreText = this.add.text(16, 16, 'Score: 0', textStyle);
@@ -173,6 +174,7 @@ class GameScene extends Phaser.Scene {
 
     this.physics.add.collider(this.ball, this.paddle);
     this.physics.add.collider(this.ball, this.bricks, this.hitBrick, null, this);
+    this.physics.add.collider(this.ball, this.protectionBricks, this.hitProtectionBrick, null, this);
 
     this.cursors = this.input.keyboard.createCursorKeys();
 
@@ -260,7 +262,13 @@ class GameScene extends Phaser.Scene {
     this.spawnPowerUpChance();
 
     if (this.bricks.countActive(true) === 0) {
-      this.time.delayedCall(250, this.completeLevel, [], this);
+      if (this.currentLevelConfig?.boss) {
+        if (!this.bossFightStarted) {
+          this.time.delayedCall(500, this.startBossFight, [], this);
+        }
+      } else {
+        this.time.delayedCall(250, this.completeLevel, [], this);
+      }
     }
   }
 
@@ -294,6 +302,7 @@ class GameScene extends Phaser.Scene {
   }
 
   applyLevelConfig() {
+    this.endBossFight();
     this.level = LEVEL_CONFIGS[this.levelIndex].level;
     this.levelReward = LEVEL_CONFIGS[this.levelIndex].reward;
     this.currentLevelConfig = LEVEL_CONFIGS[this.levelIndex];
@@ -302,6 +311,137 @@ class GameScene extends Phaser.Scene {
     this.powerUpChance = this.currentLevelConfig.powerUpChance;
     this.ballBaseSpeed = this.currentLevelConfig.baseBallSpeed;
     this.levelText?.setText(`Stage ${this.level} • ${this.levelReward}`);
+  }
+
+  startBossFight() {
+    if (this.bossFightStarted || !this.currentLevelConfig?.boss) {
+      return;
+    }
+
+    this.bossFightStarted = true;
+    this.bossActive = true;
+    this.bossMaxHP = this.currentLevelConfig.bossHP || 300;
+    this.bossHP = this.bossMaxHP;
+    this.displayNotification('Boss fight! Crush the guardian bricks!', 2600);
+
+    const bossY = 100;
+    this.bossSprite = this.physics.add.sprite(this.scale.width / 2, bossY, 'brick');
+    this.bossSprite.setDisplaySize(220, 70);
+    this.bossSprite.setImmovable(true);
+    this.bossSprite.body.allowGravity = false;
+    this.bossSprite.setTint(0xff0077);
+    this.bossSprite.setDepth(5);
+    this.physics.add.collider(this.ball, this.bossSprite, this.hitBoss, null, this);
+
+    this.bossGaugeBg = this.add.graphics();
+    this.bossGaugeFill = this.add.graphics();
+    this.bossLabel = this.add
+      .text(this.scale.width / 2, bossY - 40, `Boss: ${this.levelReward}`, {
+        fontSize: '20px',
+        fill: '#ffe066',
+      })
+      .setOrigin(0.5);
+
+    this.updateBossGauge();
+
+    this.protectionTimer?.remove(false);
+    this.protectionTimer = this.time.addEvent({
+      delay: 10000,
+      loop: true,
+      callback: this.spawnProtectionBricks,
+      callbackScope: this,
+    });
+  }
+
+  spawnProtectionBricks() {
+    if (!this.bossActive) {
+      return;
+    }
+
+    const spawnCount = Phaser.Math.Between(1, 2);
+    for (let i = 0; i < spawnCount; i++) {
+      const x = Phaser.Math.Between(120, 680);
+      const y = Phaser.Math.Between(140, 220);
+      const brick = this.protectionBricks.create(x, y, 'brick');
+      brick.setOrigin(0.5);
+      brick.setScale(0.8);
+      brick.setTint(0x7cf5ff);
+      brick.setData('protectionHits', Phaser.Math.Between(1, 2));
+      brick.refreshBody();
+    }
+  }
+
+  hitProtectionBrick(ball, brick) {
+    const remaining = (brick.getData('protectionHits') || 1) - 1;
+    if (remaining <= 0) {
+      brick.disableBody(true, true);
+    } else {
+      brick.setData('protectionHits', remaining);
+      brick.setAlpha(0.6);
+    }
+    ball.setVelocityY(-Math.abs(ball.body.velocity.y));
+  }
+
+  hitBoss(ball) {
+    if (!this.bossActive) {
+      return;
+    }
+
+    const damage = 16 + Math.floor(this.combo / 4) * 2;
+    this.bossHP = Math.max(this.bossHP - damage, 0);
+    this.updateBossGauge();
+    ball.setVelocityY(-Math.abs(ball.body.velocity.y));
+
+    if (this.bossHP <= 0) {
+      this.defeatBoss();
+    }
+  }
+
+  updateBossGauge() {
+    if (!this.bossGaugeFill || !this.bossGaugeBg) {
+      return;
+    }
+
+    const centerX = this.scale.width / 2;
+    const gaugeWidth = 220;
+    const gaugeHeight = 18;
+    const percent = Phaser.Math.Clamp(this.bossHP / this.bossMaxHP, 0, 1);
+
+    this.bossGaugeBg.clear();
+    this.bossGaugeBg.fillStyle(0x222222, 0.9);
+    this.bossGaugeBg.fillRoundedRect(centerX - gaugeWidth / 2, 60, gaugeWidth, gaugeHeight, 6);
+
+    this.bossGaugeFill.clear();
+    this.bossGaugeFill.fillStyle(0xff4466, 1);
+    this.bossGaugeFill.fillRoundedRect(centerX - gaugeWidth / 2 + 2, 60 + 2, (gaugeWidth - 4) * percent, gaugeHeight - 4, 4);
+
+    this.bossLabel?.setText(`Boss: ${this.levelReward} (${this.bossHP}/${this.bossMaxHP})`);
+  }
+
+  defeatBoss() {
+    this.bossActive = false;
+    this.displayNotification('Boss defeated! Beat the next challenge.', 2400);
+    this.recordCollectible(`Defeated boss stage ${this.level}`);
+    this.endBossFight();
+    this.time.delayedCall(800, () => this.completeLevel(), [], this);
+  }
+
+  endBossFight() {
+    this.bossActive = false;
+    this.bossFightStarted = false;
+    this.bossHP = 0;
+    this.bossMaxHP = 0;
+    this.bossSprite?.destroy();
+    this.bossSprite = null;
+    this.bossGaugeBg?.destroy();
+    this.bossGaugeBg = null;
+    this.bossGaugeFill?.destroy();
+    this.bossGaugeFill = null;
+    this.bossLabel?.destroy();
+    this.bossLabel = null;
+    this.protectionTimer?.remove(false);
+    this.protectionTimer = null;
+    this.protectionBricks?.clear(true, true);
   }
 
   handleComboMilestone() {
